@@ -46,6 +46,8 @@ from streaming import StreamingDataset
 from transformers import PreTrainedTokenizerBase
 
 from llmfoundry.utils.logging_utils import SpecificWarningFilter
+from PIL import Image
+import torchvision.transforms as transforms
 
 log = logging.getLogger(__name__)
 
@@ -59,10 +61,11 @@ DOWNLOADED_FT_DATASETS_DIRPATH = os.path.abspath(
 SUPPORTED_EXTENSIONS = ['.csv', '.jsonl', '.parquet']
 
 PromptResponseDict = Dict[str, str]
+MultimodalPromptResponseDict = Dict[str, Union[str, Image.Image]]
 ChatFormattedDict = Dict[str, List[Dict[str, str]]]
 Example = Union[PromptResponseDict, ChatFormattedDict]
-ExampleType = Literal['prompt_response', 'chat']
-TokenizedExample = Dict[str, List[int]]
+ExampleType = Literal['prompt_response', 'chat', 'multimodal']
+TokenizedExample = Dict[str, List[Union[int, Image.Image]]]
 
 
 def _get_example_type(example: Example) -> ExampleType:
@@ -79,6 +82,11 @@ def _get_example_type(example: Example) -> ExampleType:
     """
     if 'messages' in example:
         return 'chat'
+    elif 'image' in example and any([
+            pr in example
+            for pr in _ALLOWED_PROMPT_KEYS.union(_ALLOWED_RESPONSE_KEYS)
+    ]):
+        return 'multimodal'
     elif any([
             pr in example
             for pr in _ALLOWED_PROMPT_KEYS.union(_ALLOWED_RESPONSE_KEYS)
@@ -196,8 +204,70 @@ def _tokenize_prompt_response_formatted_example(
             f'Unable to tokenize example because {response_key} was not a string. {example=}'
         )
 
-    return tokenizer(text=prompt, text_target=response)
+    return tokenizer(text=prompt, text_target=response) 
 
+
+def _square_pad_img(img, bg_color=(255, 255, 255)):
+    '''
+        img: PIL Image
+    '''
+    width, height = img.size
+    if width == height:
+        return img
+    elif width > height:
+        result = Image.new(img.mode, (width, width), bg_color)
+        result.paste(img, (0, (width - height) // 2))
+    else:
+        result = Image.new(img.mode, (height, height), bg_color)
+        result.paste(img, ((height - width) // 2, 0))
+    return result
+
+
+def _tokenize_multimodal_prompt_response_formatted_example(
+        example: MultimodalPromptResponseDict,
+        tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
+    """Tokenize a formatted example and validate expected keys."""
+    example_keys = set(example.keys())
+    prompt_keys = example_keys.intersection(_ALLOWED_PROMPT_KEYS)
+    response_keys = example_keys.intersection(_ALLOWED_RESPONSE_KEYS)
+
+    if len(prompt_keys) != 1:
+        raise KeyError(
+            f'Unable to tokenize example because {len(prompt_keys)} of the allowed prompt keys ' +\
+            f'were present in {example_keys=}. Please specify exactly one. {_ALLOWED_PROMPT_KEYS=}'
+        )
+
+    if len(response_keys) != 1:
+        raise KeyError(
+            f'Unable to tokenize example because {len(response_keys)} of the allowed response keys ' +\
+            f'were present in {example_keys=}. Please specify exactly one. {_ALLOWED_RESPONSE_KEYS=}'
+        )
+
+    prompt_key = prompt_keys.pop()
+    response_key = response_keys.pop()
+    prompt = example[prompt_key]
+    response = example[response_key]
+
+    # preprocess image
+    CLIP_IMG_SIZE = 336 # TODO dont really want to hardcode this image size
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # TODO check this is the right preprocessing
+    image = _square_pad_img(example['image']) 
+    image = transforms.functional.resize(image, CLIP_IMG_SIZE, antialias=True)
+    image = transform(image)
+
+    if not isinstance(prompt, str):
+        raise TypeError(
+            f'Unable to tokenize example because {prompt_key} was not a string. {example=}'
+        )
+
+    if not isinstance(response, str):
+        raise TypeError(
+            f'Unable to tokenize example because {response_key} was not a string. {example=}'
+        )
+
+    batch = tokenizer(text=prompt, text_target=response)
+    batch['images'] = image
+    return batch
 
 def _tokenize_formatted_example(
         example: Example,
@@ -219,6 +289,11 @@ def _tokenize_formatted_example(
     if example_format == 'chat':
         chat_example = cast(ChatFormattedDict, example)
         return _tokenize_chat_formatted_example(chat_example, tokenizer)
+    elif example_format == 'multimodal':
+        multimodal_example: MultimodalPromptResponseDict = cast(
+            MultimodalPromptResponseDict, example)
+        return _tokenize_multimodal_prompt_response_formatted_example(
+            multimodal_example, tokenizer)
     elif example_format == 'prompt_response':
         prompt_response_example: PromptResponseDict = cast(
             PromptResponseDict, example)

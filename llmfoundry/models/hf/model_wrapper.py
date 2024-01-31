@@ -65,7 +65,10 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
 
         # Note: We need to add the FSDP related attributes to the model AFTER the super init,
         # so that the (possible) embedding resizing doesn't destroy them
-        prepare_hf_model_for_fsdp(self.model, init_device)
+
+        # TODO probably want to write our own prepare_hf_model_for_fsdp... for now, just try this
+        # prepare_hf_model_for_fsdp(self.model, init_device)
+        prepare_hf_model_for_fsdp(self.model.language_model, init_device)
 
         # This provides support for meta initialization when using FSDP
         self.model.param_init_fn = lambda module: self.model._init_weights(
