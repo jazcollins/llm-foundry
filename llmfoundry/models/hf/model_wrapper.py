@@ -66,9 +66,11 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
         # Note: We need to add the FSDP related attributes to the model AFTER the super init,
         # so that the (possible) embedding resizing doesn't destroy them
 
-        # TODO probably want to write our own prepare_hf_model_for_fsdp... for now, just try this
-        # prepare_hf_model_for_fsdp(self.model, init_device)
-        prepare_hf_model_for_fsdp(self.model.language_model, init_device)
+        prepare_hf_model_for_fsdp(self.model, init_device)
+
+        # prepare_hf_model_for_fsdp(self.model.language_model, init_device) --> this OOMs in fsdp setup
+        # self.model.multi_modal_projector._fsdp_wrap = True
+        # self.model.vision_tower._fsdp_wrap = True
 
         # This provides support for meta initialization when using FSDP
         self.model.param_init_fn = lambda module: self.model._init_weights(
@@ -81,6 +83,7 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
                 k: v for k, v in batch.items() if k in self.model_forward_args
             }
             output = self.model(**batch)  # type: ignore (thirdparty)
+  
         else:
             raise ValueError(
                 'Unexpected batch type. Expected a dictionary with keys corresponding to the inputs to the forward function of the Huggingface model'

@@ -22,7 +22,7 @@ from composer.utils import dist
 from omegaconf import DictConfig
 from torch import nn
 from transformers import (AutoConfig, AutoModelForCausalLM, PreTrainedModel,
-                          PreTrainedTokenizerBase, CLIPVisionModel, CLIPImageProcessor)
+                          PreTrainedTokenizerBase)
 
 from llmfoundry.models.hf.hf_fsdp import hf_get_init_device
 from llmfoundry.models.hf.model_wrapper import HuggingFaceModelWithZLoss
@@ -36,7 +36,7 @@ try:
 except ImportError:
     model_types = transformers.PreTrainedModel
 
-__all__ = ['ComposerHFCausalLM', 'ComposerMultimodalHFCausalLM']
+__all__ = ['ComposerHFCausalLM']
 
 log = logging.getLogger(__name__)
 

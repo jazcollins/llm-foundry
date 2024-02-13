@@ -222,6 +222,9 @@ def _square_pad_img(img, bg_color=(255, 255, 255)):
         result.paste(img, ((height - width) // 2, 0))
     return result
 
+import torch
+from transformers import AutoProcessor
+img_processor = AutoProcessor.from_pretrained("llava-hf/bakLlava-v1-hf")
 
 def _tokenize_multimodal_prompt_response_formatted_example(
         example: MultimodalPromptResponseDict,
@@ -248,12 +251,8 @@ def _tokenize_multimodal_prompt_response_formatted_example(
     prompt = example[prompt_key]
     response = example[response_key]
 
-    # preprocess image
-    CLIP_IMG_SIZE = 336 # TODO dont really want to hardcode this image size
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # TODO check this is the right preprocessing
-    image = _square_pad_img(example['image']) 
-    image = transforms.functional.resize(image, CLIP_IMG_SIZE, antialias=True)
-    image = transform(image)
+    processed_dict = img_processor(prompt, example['image'], return_tensors='pt')
+    image = torch.squeeze(processed_dict['pixel_values'], 0)
 
     if not isinstance(prompt, str):
         raise TypeError(
@@ -265,7 +264,7 @@ def _tokenize_multimodal_prompt_response_formatted_example(
             f'Unable to tokenize example because {response_key} was not a string. {example=}'
         )
 
-    batch = tokenizer(text=prompt, text_target=response)
+    batch = tokenizer(text=prompt, text_target=response) 
     batch['images'] = image
     return batch
 

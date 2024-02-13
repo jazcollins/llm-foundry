@@ -13,12 +13,16 @@ from composer.metrics.nlp import LanguageCrossEntropy, MaskedAccuracy
 from composer.utils import dist
 from omegaconf import DictConfig
 from transformers import (AutoConfig, PreTrainedTokenizerBase,
-                          LlavaForConditionalGeneration)
+                          LlavaForConditionalGeneration, LlavaConfig,
+                          CLIPVisionConfig, MistralConfig, LlamaConfig)
 
 from llmfoundry.models.hf.hf_fsdp import hf_get_init_device
 from llmfoundry.models.hf.model_wrapper import HuggingFaceModelWithZLoss
 from llmfoundry.models.utils import (adapt_tokenizer_for_denoising,
                                      init_empty_weights)
+
+from collections import UserDict
+from transformers.utils.generic import ModelOutput
 
 __all__ = ['ComposerHFLLaVa']
 
@@ -35,7 +39,7 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
     Args:
         cfg (DictConfig): An omegaconf dictionary used to configure the model:
             cfg.pretrained_model_name_or_path (str): The name of or local path to
-                the HF model (e.g., `t5-base` to instantiate a T5 using the base config).
+                the HF model (e.g., `llava-hf/bakLlava-v1-hf` to instantiate a bakllava base config).
             cfg.config_overrides (dict, optional): An optional dictionary of keyword
                 arguments that override the default configuration associated with
                 cfg.pretrained_model_name_or_path. Default: ``{}``.
@@ -48,12 +52,6 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
             cfg.z_loss (float, optional): The coefficient of the z-loss. If >0.0, this
                 the z-loss will be multiplied by this value before being added to the
                 standard loss term. Default: ``0.0``.
-            cfg.adapt_vocab_for_denoising (bool, optional):  Whether to adapt the vocab
-                of the model/tokenizer to include sentinel tokens that are used in denoising
-                tasks like Span Corruption. If you intend to load from an existing Composer
-                checkpoint that was trained on such a task, set this to ``True`` to ensure
-                that the model vocab size matches your checkpoint's vocab size when loading
-                the weights. Default: ``False``.
         tokenizer (PreTrainedTokenizer): The tokenizer that the model will use.
     """
 
@@ -84,14 +82,6 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
             else:
                 setattr(config, k, v)
 
-        # if not config.is_encoder_decoder:
-        #     raise ValueError(f'Model type "hf_t5" currently only supports T5 models ' +\
-        #                      f'using configs where `is_encoder_decoder` is ``True``.')
-
-        # # Set up the tokenizer (add tokens for denoising sentinels if needed)
-        # if om_model_config.get('adapt_vocab_for_denoising', False):
-        #     adapt_tokenizer_for_denoising(tokenizer)
-
         init_device = om_model_config.get('init_device', 'cpu')
 
         # Get the device we want to initialize, and use the
@@ -103,23 +93,42 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
         if dist.get_local_rank() != 0 and init_device == 'mixed':
             om_model_config.pretrained = False
 
+        # Initializing a CLIP-vision config
+        vision_config = CLIPVisionConfig()
+
+        # Initializing a Mistral config
+        text_config = MistralConfig()
+
+        llava_config = LlavaConfig(vision_config, text_config)
+
         if resolved_init_device == 'cpu':
             if om_model_config.pretrained:
                 model = LlavaForConditionalGeneration.from_pretrained(
                     om_model_config.pretrained_model_name_or_path,
                     config=config,
-                    torch_dtype=torch.float16)
+                    cache_dir="/tmp/model_cache/")
+                model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
+                # see https://github.com/huggingface/transformers/issues/26969
+                #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
+                # raise ValueError(
+                # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599])
+
+                # TODO want to set differently for different phases
+                model.vision_tower.requires_grad_(False)
+                model.language_model.requires_grad_(False)
+                # model.multi_modal_projector.requires_grad_(True)
+                
             else:
-                model = LlavaForConditionalGeneration(config,
-                    torch_dtype=torch.float16)
+                # TODO
+                model = LlavaForConditionalGeneration(llava_config)
         elif resolved_init_device == 'meta':
             if om_model_config.pretrained:
                 raise ValueError(
                     'Setting cfg.pretrained=True is not supported when init_device="meta".'
                 )
             with init_empty_weights(include_buffers=False):
-                model = LlavaForConditionalGeneration(config,
-                    torch_dtype=torch.float16)
+                # TODO
+                model = LlavaForConditionalGeneration(llava_config)
         else:
             raise ValueError(
                 f'init_device="{init_device}" must be either "cpu" or "meta".')
@@ -137,3 +146,22 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
                                           init_device=init_device)
 
         return composer_model
+    
+    def forward(self, batch: Mapping):
+        max_seq_len = batch['input_ids'].shape[1]
+
+        if isinstance(batch, dict) or isinstance(batch, UserDict):
+            # Further input validation is left to the huggingface forward call
+            batch = {
+                k: v for k, v in batch.items() if k in self.model_forward_args
+            }
+            output = self.model(**batch)  # type: ignore (thirdparty)
+
+            # TODO not a great fix
+            output.logits = output.logits[:,-max_seq_len:]
+
+        else:
+            raise ValueError(
+                'Unexpected batch type. Expected a dictionary with keys corresponding to the inputs to the forward function of the Huggingface model'
+            )
+        return output

@@ -5,7 +5,7 @@
 # which is MIT licensed
 
 import functools
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Union
 
 import torch
 from transformers import PreTrainedModel
@@ -93,6 +93,7 @@ def hf_get_hidden_layers(model: PreTrainedModel) -> Any:
         'layers',  # ProphetNet, Marian (from encoder)
         'model.layers',  # LLaMa
         'transformer.blocks',  # MPT
+        'language_model.model.layers', # LLaVA (LLaMa and Mistral)
     )
     layers = findattr(model, hidden_layers_attrs)
     if layers is None:
