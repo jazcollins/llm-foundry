@@ -534,7 +534,7 @@ class StreamingFinetuningDataset(StreamingDataset):
                 )
 
             return sample
-        return tokenize_formatted_example(sample, tokenizer=self.tokenizer)
+        return _tokenize_formatted_example(sample, tokenizer=self.tokenizer)
 
 
 class DatasetConstructor:
@@ -737,7 +737,7 @@ class DatasetConstructor:
             def dataset_mapper(example: Dict):
                 if preprocessing_fn is not None:
                     example = preprocessing_fn(example)
-                return tokenize_formatted_example(example, tokenizer)
+                return _tokenize_formatted_example(example, tokenizer)
 
             detected_cpu_count = os.cpu_count() or 1
             detected_cpus_with_margin = detected_cpu_count - 8
