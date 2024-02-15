@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Mapping
 import torch
+from torch import nn
 
 from composer.metrics.nlp import LanguageCrossEntropy, MaskedAccuracy
 from composer.utils import dist
@@ -15,14 +16,16 @@ from omegaconf import DictConfig
 from transformers import (AutoConfig, PreTrainedTokenizerBase,
                           LlavaForConditionalGeneration, LlavaConfig,
                           CLIPVisionConfig, MistralConfig, LlamaConfig)
-
+from composer.models import HuggingFaceModel
 from llmfoundry.models.hf.hf_fsdp import hf_get_init_device
-from llmfoundry.models.hf.model_wrapper import HuggingFaceModelWithZLoss
+# from llmfoundry.models.hf.model_wrapper import HuggingFaceModelWithZLoss
 from llmfoundry.models.utils import (adapt_tokenizer_for_denoising,
                                      init_empty_weights)
 
 from collections import UserDict
 from transformers.utils.generic import ModelOutput
+from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
+from llmfoundry.models.hf.hf_fsdp import prepare_hf_model_for_fsdp
 
 __all__ = ['ComposerHFLLaVa']
 
@@ -30,31 +33,7 @@ __all__ = ['ComposerHFLLaVa']
 _HF_IGNORE_INDEX = -100
 
 
-class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
-    """Configures a :class:`.HuggingFaceModel` around a T5.
-
-    Note: This function uses `transformers.LlavaForConditionalGeneration`. Future releases
-        will expand support to more general classes of HF Encoder-Decoder models.
-
-    Args:
-        cfg (DictConfig): An omegaconf dictionary used to configure the model:
-            cfg.pretrained_model_name_or_path (str): The name of or local path to
-                the HF model (e.g., `llava-hf/bakLlava-v1-hf` to instantiate a bakllava base config).
-            cfg.config_overrides (dict, optional): An optional dictionary of keyword
-                arguments that override the default configuration associated with
-                cfg.pretrained_model_name_or_path. Default: ``{}``.
-            cfg.pretrained (bool): Whether to instantiate the model with pre-trained
-                weights coming from cfg.pretrained_model_name_or_path. If ``True``,
-                cfg.config_overrides must be compatible with the pre-trained weights.
-            cfg.init_device ('cpu' | 'meta'): Which device, 'cpu' or 'meta', to
-                initialize the model on. Currently, `meta` is only supported when
-                cfg.pretrained is ``False``. Default: ``'cpu'``.
-            cfg.z_loss (float, optional): The coefficient of the z-loss. If >0.0, this
-                the z-loss will be multiplied by this value before being added to the
-                standard loss term. Default: ``0.0``.
-        tokenizer (PreTrainedTokenizer): The tokenizer that the model will use.
-    """
-
+class ComposerHFLLaVa(HuggingFaceModel):
     def __init__(self, om_model_config: DictConfig,
                  tokenizer: PreTrainedTokenizerBase):
         config = AutoConfig.from_pretrained(
@@ -62,7 +41,6 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
             trust_remote_code=om_model_config.get('trust_remote_code', True),
             use_auth_token=om_model_config.get('use_auth_token', False),
         )
-
         # set config overrides
         for k, v in om_model_config.get('config_overrides', {}).items():
             if not hasattr(config, k):
@@ -84,14 +62,23 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
 
         init_device = om_model_config.get('init_device', 'cpu')
 
-        # Get the device we want to initialize, and use the
-        # resolved version to initialize the HF model
-        resolved_init_device = hf_get_init_device(init_device)
+
+        # # Get the device we want to initialize, and use the
+        # # resolved version to initialize the HF model
+        # resolved_init_device = hf_get_init_device(init_device)
 
         # We need to have all non-zero local ranks be not-pretrained
         # Rank 0 will still be pretrained, and distribute the weights appropriately
         if dist.get_local_rank() != 0 and init_device == 'mixed':
             om_model_config.pretrained = False
+
+        # resolved_om_model_config = om.to_container(om_model_config,
+        #                                            resolve=True)
+        # hf_config = MPTConfig.from_dict(resolved_om_model_config)
+        # model = MPTForCausalLM(hf_config)
+
+        train_metrics = [LanguageCrossEntropy()]
+        eval_metrics = [LanguageCrossEntropy()]
 
         # Initializing a CLIP-vision config
         vision_config = CLIPVisionConfig()
@@ -101,52 +88,74 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
 
         llava_config = LlavaConfig(vision_config, text_config)
 
-        if resolved_init_device == 'cpu':
-            if om_model_config.pretrained:
-                model = LlavaForConditionalGeneration.from_pretrained(
-                    om_model_config.pretrained_model_name_or_path,
-                    config=config,
-                    cache_dir="/tmp/model_cache/")
-                model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
-                # see https://github.com/huggingface/transformers/issues/26969
-                #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
-                # raise ValueError(
-                # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599])
+        if om_model_config.pretrained:
+            model = LlavaForConditionalGeneration.from_pretrained(
+                om_model_config.pretrained_model_name_or_path,
+                config=config,
+                cache_dir="/tmp/model_cache/")
+            model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
+            # see https://github.com/huggingface/transformers/issues/26969
+            #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
+            # raise ValueError(
+            # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599])
 
-                # TODO want to set differently for different phases
-                model.vision_tower.requires_grad_(False)
-                model.language_model.requires_grad_(False)
-                # model.multi_modal_projector.requires_grad_(True)
-                
-            else:
-                # TODO
-                model = LlavaForConditionalGeneration(llava_config)
-        elif resolved_init_device == 'meta':
-            if om_model_config.pretrained:
+            # TODO want to set differently for different phases
+            model.vision_tower.requires_grad_(False)
+            model.language_model.requires_grad_(False)
+            # model.multi_modal_projector.requires_grad_(True)
+            
+        else:
+            # TODO
+            model = LlavaForConditionalGeneration(llava_config)
+
+        
+
+        super().__init__(
+            model=model,
+            tokenizer=tokenizer,
+            use_logits=True,
+            metrics=train_metrics,
+            eval_metrics=eval_metrics,
+            shift_labels=True,
+            # allow_embedding_resizing=True,
+        )
+
+        self.n_active_params = sum(p.numel() for p in self.parameters())
+
+        loss_fn_config = om_model_config.get('loss_fn', 'fused_crossentropy')
+        if loss_fn_config == 'fused_crossentropy':
+            try:
+                from flash_attn.losses.cross_entropy import \
+                    CrossEntropyLoss as FusedCrossEntropyLoss
+
+                self.loss_fn = FusedCrossEntropyLoss(ignore_index=-100)
+            except:
                 raise ValueError(
-                    'Setting cfg.pretrained=True is not supported when init_device="meta".'
+                    'Fused Cross Entropy is not installed. Either (1) have a CUDA-compatible GPU '
+                    +
+                    'and `pip install .[gpu]` if installing from source or `pip install xentropy-cuda-lib@git+https://github.com/HazyResearch/flash-attention.git@v1.0.3#subdirectory=csrc/xentropy` '
+                    +
+                    'if installing from pypi, or (2) set your config model.loss_fn=torch_crossentropy.'
                 )
-            with init_empty_weights(include_buffers=False):
-                # TODO
-                model = LlavaForConditionalGeneration(llava_config)
+        elif loss_fn_config == 'torch_crossentropy':
+            self.loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
         else:
             raise ValueError(
-                f'init_device="{init_device}" must be either "cpu" or "meta".')
+                f'Specified loss_fn={self.loss_fn} not recognized. `loss_fn` must be one of [`fused_crossentropy`, `torch_crossentropy`].'
+            )
+        
+        prepare_hf_model_for_fsdp(self.model, init_device)
 
-        metrics = [
-            LanguageCrossEntropy(ignore_index=_HF_IGNORE_INDEX),
-            MaskedAccuracy(ignore_index=_HF_IGNORE_INDEX)
-        ]
-
-        composer_model = super().__init__(model=model,
-                                          tokenizer=tokenizer,
-                                          metrics=metrics,
-                                          z_loss=om_model_config.get(
-                                              'z_loss', 0.0),
-                                          init_device=init_device)
-
-        return composer_model
+        # This provides support for meta initialization when using FSDP
+        self.model.param_init_fn = lambda module: self.model._init_weights(
+            module)
+        
+    def get_targets(self, batch: Mapping) -> torch.Tensor:
+        targets = torch.roll(batch['labels'], shifts=-1)
+        targets[:, -1] = -100
+        return targets
     
+
     def forward(self, batch: Mapping):
         max_seq_len = batch['input_ids'].shape[1]
 
@@ -165,3 +174,9 @@ class ComposerHFLLaVa(HuggingFaceModelWithZLoss):
                 'Unexpected batch type. Expected a dictionary with keys corresponding to the inputs to the forward function of the Huggingface model'
             )
         return output
+
+    def loss(self, outputs: LlavaCausalLMOutputWithPast,
+             batch: Mapping) -> torch.Tensor:
+        targets = self.get_targets(batch)
+        return self.loss_fn(outputs.logits.view(-1, outputs.logits.size(-1)),
+                            targets.view(-1))

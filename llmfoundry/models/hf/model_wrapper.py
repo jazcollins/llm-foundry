@@ -68,10 +68,6 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
 
         prepare_hf_model_for_fsdp(self.model, init_device)
 
-        # prepare_hf_model_for_fsdp(self.model.language_model, init_device) --> this OOMs in fsdp setup
-        # self.model.multi_modal_projector._fsdp_wrap = True
-        # self.model.vision_tower._fsdp_wrap = True
-
         # This provides support for meta initialization when using FSDP
         self.model.param_init_fn = lambda module: self.model._init_weights(
             module)
