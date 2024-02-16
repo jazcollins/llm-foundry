@@ -13,18 +13,17 @@ from torch import nn
 from composer.metrics.nlp import LanguageCrossEntropy, MaskedAccuracy
 from composer.utils import dist
 from omegaconf import DictConfig
-from transformers import (AutoConfig, PreTrainedTokenizerBase,
-                          LlavaForConditionalGeneration, LlavaConfig,
-                          CLIPVisionConfig, MistralConfig, LlamaConfig)
+from transformers import (AutoConfig, PreTrainedTokenizerBase, CLIPVisionConfig,
+                          LlavaForConditionalGeneration, LlavaConfig, AutoModelForCausalLM,
+                          AutoModel)
 from composer.models import HuggingFaceModel
 from llmfoundry.models.hf.hf_fsdp import hf_get_init_device
-# from llmfoundry.models.hf.model_wrapper import HuggingFaceModelWithZLoss
 from llmfoundry.models.utils import (adapt_tokenizer_for_denoising,
                                      init_empty_weights)
 
 from collections import UserDict
 from transformers.utils.generic import ModelOutput
-from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast
+from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast, LlavaMultiModalProjector
 from llmfoundry.models.hf.hf_fsdp import prepare_hf_model_for_fsdp
 
 __all__ = ['ComposerHFLLaVa']
@@ -62,7 +61,6 @@ class ComposerHFLLaVa(HuggingFaceModel):
 
         init_device = om_model_config.get('init_device', 'cpu')
 
-
         # # Get the device we want to initialize, and use the
         # # resolved version to initialize the HF model
         # resolved_init_device = hf_get_init_device(init_device)
@@ -72,43 +70,38 @@ class ComposerHFLLaVa(HuggingFaceModel):
         if dist.get_local_rank() != 0 and init_device == 'mixed':
             om_model_config.pretrained = False
 
-        # resolved_om_model_config = om.to_container(om_model_config,
-        #                                            resolve=True)
-        # hf_config = MPTConfig.from_dict(resolved_om_model_config)
-        # model = MPTForCausalLM(hf_config)
-
         train_metrics = [LanguageCrossEntropy()]
         eval_metrics = [LanguageCrossEntropy()]
-
-        # Initializing a CLIP-vision config
-        vision_config = CLIPVisionConfig()
-
-        # Initializing a Mistral config
-        text_config = MistralConfig()
-
-        llava_config = LlavaConfig(vision_config, text_config)
 
         if om_model_config.pretrained:
             model = LlavaForConditionalGeneration.from_pretrained(
                 om_model_config.pretrained_model_name_or_path,
                 config=config,
-                cache_dir="/tmp/model_cache/")
-            model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
-            # see https://github.com/huggingface/transformers/issues/26969
-            #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
-            # raise ValueError(
-            # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599])
-
-            # TODO want to set differently for different phases
-            model.vision_tower.requires_grad_(False)
-            model.language_model.requires_grad_(False)
-            # model.multi_modal_projector.requires_grad_(True)
-            
+                cache_dir="/tmp/model_cache/")           
         else:
-            # TODO
-            model = LlavaForConditionalGeneration(llava_config)
+            # bakklava style
+            vision_tower = 'openai/clip-vit-large-patch14-336'
+            vision_config = CLIPVisionConfig.from_pretrained(vision_tower)
 
-        
+            model_name_or_path = 'mistralai/Mistral-7B-v0.1'
+            text_config = AutoConfig.from_pretrained(model_name_or_path)
+
+            llava_config = LlavaConfig(vision_config, text_config)
+            model = LlavaForConditionalGenerationForTraining(model_name_or_path, vision_tower, llava_config)
+            # TODO i assume this model is fully scratch in shape of bakklava
+            # want to rewrite LlavaForConditionalGeneration init function to load from pretrained?
+
+        # temp fix
+        model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
+        # see https://github.com/huggingface/transformers/issues/26969
+        #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
+        # raise ValueError(
+        # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599] 
+
+        # TODO want to set differently for different phases
+        model.vision_tower.requires_grad_(False)
+        model.language_model.requires_grad_(False)
+        # model.multi_modal_projector.requires_grad_(True)        
 
         super().__init__(
             model=model,
@@ -117,7 +110,7 @@ class ComposerHFLLaVa(HuggingFaceModel):
             metrics=train_metrics,
             eval_metrics=eval_metrics,
             shift_labels=True,
-            # allow_embedding_resizing=True,
+            allow_embedding_resizing=True,
         )
 
         self.n_active_params = sum(p.numel() for p in self.parameters())
@@ -154,7 +147,6 @@ class ComposerHFLLaVa(HuggingFaceModel):
         targets = torch.roll(batch['labels'], shifts=-1)
         targets[:, -1] = -100
         return targets
-    
 
     def forward(self, batch: Mapping):
         max_seq_len = batch['input_ids'].shape[1]
@@ -180,3 +172,19 @@ class ComposerHFLLaVa(HuggingFaceModel):
         targets = self.get_targets(batch)
         return self.loss_fn(outputs.logits.view(-1, outputs.logits.size(-1)),
                             targets.view(-1))
+    
+
+class LlavaForConditionalGenerationForTraining(LlavaForConditionalGeneration):
+    '''
+        Overwrite LlavaForConditionalGeneration's init function so we can load CLIP and LLM weights.
+    '''
+    def __init__(self, text_model_name, vision_model_name, config: LlavaConfig):
+        # TODO can probably infer text_model_name and vision_model_name from config..
+        super().__init__(config)
+        self.vision_tower = AutoModel.from_pretrained(vision_model_name)
+
+        self.multi_modal_projector = LlavaMultiModalProjector(config)
+        self.vocab_size = config.vocab_size
+        self.language_model = AutoModelForCausalLM.from_pretrained(text_model_name)
+        self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
+        self.post_init()
