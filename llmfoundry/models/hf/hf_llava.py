@@ -169,8 +169,8 @@ class ComposerHFLLaVa(HuggingFaceModel):
     def loss(self, outputs: LlavaCausalLMOutputWithPast,
              batch: Mapping) -> torch.Tensor:
         targets = self.get_targets(batch)
-        return self.loss_fn(outputs.logits.view(-1, outputs.logits.size(-1)),
-                            targets.view(-1))
+        return self.loss_fn(outputs.logits.reshape(-1, outputs.logits.size(-1)),
+                            targets.reshape(-1))
     
 
 class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
