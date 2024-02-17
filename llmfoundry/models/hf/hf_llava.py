@@ -158,7 +158,7 @@ class ComposerHFLLaVa(HuggingFaceModel):
 
             # Forward call pad logits so shape doesn't match max_seq_len and this causes downstream problems
             # TODO come up with a beter fix
-            output.logits = output.logits[:,-max_seq_len:]
+            output.logits = output.logits[:,-max_seq_len:].contiguous()
 
         else:
             raise ValueError(
@@ -169,8 +169,8 @@ class ComposerHFLLaVa(HuggingFaceModel):
     def loss(self, outputs: LlavaCausalLMOutputWithPast,
              batch: Mapping) -> torch.Tensor:
         targets = self.get_targets(batch)
-        return self.loss_fn(outputs.logits.reshape(-1, outputs.logits.size(-1)),
-                            targets.reshape(-1))
+        return self.loss_fn(outputs.logits.view(-1, outputs.logits.size(-1)),
+                            targets.view(-1))
     
 
 class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
