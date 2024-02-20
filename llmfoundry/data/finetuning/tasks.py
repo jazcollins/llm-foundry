@@ -91,14 +91,20 @@ def _get_example_type(example: Example) -> ExampleType:
     if not isinstance(example, Mapping):
         raise TypeError(
             f'Expected example to be a Mapping, but found {type(example)}')
-    if any(allowed_message_key in example
+    if 'image' in example:
+        if any(allowed_message_key in example
            for allowed_message_key in _ALLOWED_MESSAGES_KEYS):
-        return 'chat'
-    elif 'image' in example and any([
+            return 'multimodal_chat'
+        elif any([
             pr in example
             for pr in _ALLOWED_PROMPT_KEYS.union(_ALLOWED_RESPONSE_KEYS)
-    ]):
-        return 'multimodal'
+        ]):
+            return 'multimodal'
+        else:
+            raise KeyError(f'Unknown conversation type {example=}')
+    elif any(allowed_message_key in example
+           for allowed_message_key in _ALLOWED_MESSAGES_KEYS):
+        return 'chat'
     elif any([
             pr in example
             for pr in _ALLOWED_PROMPT_KEYS.union(_ALLOWED_RESPONSE_KEYS)
@@ -274,6 +280,7 @@ def _square_pad_img(img, bg_color=(255, 255, 255)):
 
 import torch
 from transformers import AutoProcessor
+# TODO replace this with LLaVA 1.5 image processor if it is not already?
 img_processor = AutoProcessor.from_pretrained("llava-hf/bakLlava-v1-hf")
 
 def _tokenize_multimodal_prompt_response_formatted_example(
@@ -318,6 +325,23 @@ def _tokenize_multimodal_prompt_response_formatted_example(
     batch['images'] = image
     return batch
 
+def _tokenize_multimodal_chat_formatted_example(
+        example: MultimodalPromptResponseDict,
+        tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
+    
+    # example_keys = set(example.keys())
+    # prompt_keys = example_keys.intersection(_ALLOWED_PROMPT_KEYS)
+    # prompt = example[prompt_keys.pop()]
+
+    # TODO prob dont need to process prompt here?
+    processed_dict = img_processor('', example['image'], return_tensors='pt')
+    image = torch.squeeze(processed_dict['pixel_values'], 0)
+
+    prompt, response = _slice_chat_formatted_example(example, tokenizer)
+    batch = tokenizer(text=prompt, text_target=response)
+    batch['images'] = image
+    return batch
+
 def _tokenize_formatted_example(
         example: Example,
         tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
@@ -338,6 +362,11 @@ def _tokenize_formatted_example(
     if example_format == 'chat':
         chat_example = cast(ChatFormattedDict, example)
         return _tokenize_chat_formatted_example(chat_example, tokenizer)
+    elif example_format == 'multimodal_chat':
+        multimodal_example: MultimodalPromptResponseDict = cast(
+            MultimodalPromptResponseDict, example) # TODO chabge???
+        return _tokenize_multimodal_chat_formatted_example(
+            multimodal_example, tokenizer)
     elif example_format == 'multimodal':
         multimodal_example: MultimodalPromptResponseDict = cast(
             MultimodalPromptResponseDict, example)
