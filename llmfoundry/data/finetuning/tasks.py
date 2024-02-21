@@ -46,7 +46,7 @@ import huggingface_hub as hf_hub
 import numpy as np
 from composer.utils import dist
 from streaming import Stream, StreamingDataset
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, CLIPImageProcessor
 
 from llmfoundry.utils.logging_utils import SpecificWarningFilter
 from PIL import Image
@@ -74,6 +74,9 @@ MultimodalPromptResponseDict = Dict[str, Union[str, Image.Image]]
 Example = Union[PromptResponseDict, ChatFormattedDict]
 ExampleType = Literal['prompt_response', 'chat', 'multimodal']
 TokenizedExample = Dict[str, List[Union[int, Image.Image]]]
+
+# TODO ultimately want to get this pretrained path from elsewhere
+img_processor = CLIPImageProcessor.from_pretrained('openai/clip-vit-large-patch14-336')
 
 
 def _get_example_type(example: Example) -> ExampleType:
@@ -278,10 +281,16 @@ def _square_pad_img(img, bg_color=(255, 255, 255)):
         result.paste(img, ((height - width) // 2, 0))
     return result
 
-import torch
-from transformers import AutoProcessor
-# TODO replace this with LLaVA 1.5 image processor if it is not already?
-img_processor = AutoProcessor.from_pretrained("llava-hf/bakLlava-v1-hf")
+
+def _process_image(image):
+    '''
+        Preprocess images according to 
+        https://github.com/haotian-liu/LLaVA/blob/5d8f1760c08b7dfba3ae97b71cbd4c6f17d12dbd/llava/mm_utils.py#L169
+    '''
+    image = _square_pad_img(image)
+    image = img_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    return image
+
 
 def _tokenize_multimodal_prompt_response_formatted_example(
         example: MultimodalPromptResponseDict,
@@ -307,9 +316,7 @@ def _tokenize_multimodal_prompt_response_formatted_example(
     response_key = response_keys.pop()
     prompt = example[prompt_key]
     response = example[response_key]
-
-    processed_dict = img_processor(prompt, example['image'], return_tensors='pt')
-    image = torch.squeeze(processed_dict['pixel_values'], 0)
+    image = _process_image(example['image'])
 
     if not isinstance(prompt, str):
         raise TypeError(
@@ -329,13 +336,7 @@ def _tokenize_multimodal_chat_formatted_example(
         example: MultimodalPromptResponseDict,
         tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
     
-    # example_keys = set(example.keys())
-    # prompt_keys = example_keys.intersection(_ALLOWED_PROMPT_KEYS)
-    # prompt = example[prompt_keys.pop()]
-
-    # TODO prob dont need to process prompt here?
-    processed_dict = img_processor('', example['image'], return_tensors='pt')
-    image = torch.squeeze(processed_dict['pixel_values'], 0)
+    image = _process_image(example['image'])
 
     prompt, response = _slice_chat_formatted_example(example, tokenizer)
     batch = tokenizer(text=prompt, text_target=response)

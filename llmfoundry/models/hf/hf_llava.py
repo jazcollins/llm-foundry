@@ -98,7 +98,8 @@ class ComposerHFLLaVa(HuggingFaceModel):
         # Fix weights for current phase of training
         model.vision_tower.requires_grad_(False)
         if not om_model_config.train_llm:
-            model.language_model.requires_grad_(False)      
+            # First phase of training
+            model.language_model.requires_grad_(False)
 
         super().__init__(
             model=model,
