@@ -115,12 +115,6 @@ class ComposerHFLLaVa(HuggingFaceModel):
             # Add LLaVA special tokens to tokenizer
             tokenizer.add_tokens(['<image>', '<pad>'], special_tokens=True)
 
-        # Fix this issue - https://github.com/huggingface/transformers/issues/26969
-        #   File "/usr/lib/python3/dist-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
-        # raise ValueError(
-        # ValueError: Attention mask should be of size (1, 1, 1599, 3198), but is torch.Size([1, 1, 1599, 1599]    
-        model.language_model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': True})
-
         # Fix weights for current phase of training
         model.vision_tower.requires_grad_(False)
         if not om_model_config.train_llm:
