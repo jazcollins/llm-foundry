@@ -15,7 +15,7 @@ from composer.utils import dist
 from omegaconf import DictConfig
 from transformers import (AutoConfig, PreTrainedTokenizerBase, CLIPVisionConfig,
                           LlavaForConditionalGeneration, LlavaConfig, AutoModelForCausalLM,
-                          AutoModel, LlavaPreTrainedModel, CLIPVisionModel)
+                          AutoModel, LlavaPreTrainedModel, CLIPVisionModel, PreTrainedModel)
 from composer.models import HuggingFaceModel
 from llmfoundry.models.hf.hf_fsdp import hf_get_init_device
 from llmfoundry.models.utils import (adapt_tokenizer_for_denoising,
@@ -24,6 +24,7 @@ from llmfoundry.models.utils import (adapt_tokenizer_for_denoising,
 from collections import UserDict
 from transformers.utils.generic import ModelOutput
 from transformers.models.llava.modeling_llava import LlavaCausalLMOutputWithPast, LlavaMultiModalProjector, Cache
+from llmfoundry.models.layers.attention import is_flash_v2_installed
 from llmfoundry.models.hf.hf_fsdp import prepare_hf_model_for_fsdp
 
 __all__ = ['ComposerHFLLaVa']
@@ -35,10 +36,35 @@ _HF_IGNORE_INDEX = -100
 class ComposerHFLLaVa(HuggingFaceModel):
     def __init__(self, om_model_config: DictConfig,
                  tokenizer: PreTrainedTokenizerBase):
+        # Set up flash attention
+        use_flash_attention_2 = om_model_config.get('use_flash_attention_2', False)
+        requested_attention_implementation = 'flash_attention_2' if use_flash_attention_2 else 'eager'
+        load_in_8bit = om_model_config.get('load_in_8bit', False)
+        if use_flash_attention_2 and not is_flash_v2_installed():
+            raise ValueError(
+                'use_flash_attention_2 is set to True, but flash-attention 2 is not installed. '
+                + 'Please `pip install llm-foundry[gpu-flash2]`.')
+
+        # This is not ideal, however Hugging Face's _autoset_attn_implementation function
+        # forces you to load the model in fp16/bf16 if you want to use flash attention. Rather than loading
+        # the model and then casting it back to fp32, we are monkeypatching their check.
+        # https://github.com/huggingface/transformers/issues/28052
+        def _autoset_attn_implementation_monkeypatch(
+                cls,  # type: ignore
+                config,  # type: ignore
+                *args,  # type: ignore
+                **kwargs):  # type: ignore
+            config._attn_implementation = requested_attention_implementation
+            return config
+
+        PreTrainedModel._autoset_attn_implementation = classmethod(
+            _autoset_attn_implementation_monkeypatch)
+
         config = AutoConfig.from_pretrained(
             om_model_config.pretrained_model_name_or_path,
             trust_remote_code=om_model_config.get('trust_remote_code', True),
             use_auth_token=om_model_config.get('use_auth_token', False),
+            attn_implementation=requested_attention_implementation,
         )
         # set config overrides
         for k, v in om_model_config.get('config_overrides', {}).items():
@@ -84,7 +110,7 @@ class ComposerHFLLaVa(HuggingFaceModel):
             text_config = AutoConfig.from_pretrained(om_model_config.llm_model_name_or_path)
 
             llava_config = LlavaConfig(vision_config, text_config)
-            model = LlavaForConditionalGenerationForTraining(llava_config)
+            model = LlavaForConditionalGenerationForTraining(llava_config, om_model_config)
 
             # Add LLaVA special tokens to tokenizer
             tokenizer.add_tokens(['<image>', '<pad>'], special_tokens=True)
@@ -178,14 +204,14 @@ class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
     '''
         Some modifications to LlavaForConditionalGeneration so we can load CLIP and LLM weights.
     '''
-    def __init__(self, config: LlavaConfig):
-        super().__init__(config)
+    def __init__(self, llava_config: LlavaConfig, config):
+        super().__init__(llava_config)
 
-        self.multi_modal_projector = LlavaMultiModalProjector(config)
-        self.vocab_size = config.vocab_size
-        self.vision_tower = CLIPVisionModel.from_pretrained('openai/clip-vit-large-patch14-336')
-        self.language_model = AutoModelForCausalLM.from_pretrained('mistralai/Mistral-7B-v0.1')
-        self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
+        self.multi_modal_projector = LlavaMultiModalProjector(llava_config)
+        self.vocab_size = llava_config.vocab_size
+        self.vision_tower = CLIPVisionModel.from_pretrained(config.vision_model_name_or_path)
+        self.language_model = AutoModelForCausalLM.from_pretrained(config.llm_model_name_or_path) # TODO pass config?
+        self.pad_token_id = llava_config.pad_token_id if llava_config.pad_token_id is not None else -1
         self.post_init()
 
     def get_input_embeddings(self):
