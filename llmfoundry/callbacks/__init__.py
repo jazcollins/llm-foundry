@@ -14,6 +14,7 @@ try:
                                                            LayerFreezing)
     from llmfoundry.callbacks.scheduled_gc_callback import \
         ScheduledGarbageCollector
+    from llmfoundry.callbacks.log_vlm_callback import GenerateVLM
 except ImportError as e:
     raise ImportError(
         'Please make sure to pip install . to get requirements for llm-foundry.'
@@ -29,4 +30,5 @@ __all__ = [
     'HuggingFaceCheckpointer',
     'AsyncEval',
     'CurriculumLearning',
+    'GenerateVLM'
 ]
