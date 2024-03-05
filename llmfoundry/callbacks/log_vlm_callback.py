@@ -90,13 +90,17 @@ class GenerateVLM(Callback):
         images = []
         orig_images = []
         for prompt, url in zip(self.prompts, self.image_urls):
-            formatted_convo = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': '<image>\n'+prompt}]
-            chat_prompt = tokenizer.apply_chat_template(formatted_convo,
-                                                        tokenize=False,
-                                                        add_generation_prompt=True)
+            if tokenizer.chat_template:
+                formatted_convo = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': '<image>\n'+prompt}]
+                chat_prompt = tokenizer.apply_chat_template(formatted_convo,
+                                                            tokenize=False,
+                                                            add_generation_prompt=True)
+            else:
+                chat_prompt = prompt
             chat_prompts.append(chat_prompt)
 
             image = Image.open(requests.get(url, stream=True).raw)
+            image = image.convert("RGBA")
             orig_images.append(image)
             processed_img = _process_image(image)
             images.append(processed_img)
@@ -126,7 +130,7 @@ class GenerateVLM(Callback):
             # Move batch to device.
             input_ids = device.tensor_to_device(input_ids)
             attn_mask = device.tensor_to_device(attn_mask)
-            img = device.tensor_to_device(img)
+            img = device.tensor_to_device(img).to(attn_mask.dtype)
             
             with get_precision_context(state.precision):
                 output_token_ids.extend(
