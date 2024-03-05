@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 from composer import algorithms
-from composer.callbacks import (EarlyStopper, Generate, GenerateVLM, LRMonitor,
+from composer.callbacks import (EarlyStopper, Generate, LRMonitor,
                                 MemoryMonitor, MemorySnapshot, OptimizerMonitor,
                                 RuntimeEstimator, SpeedMonitor)
 from composer.core import Algorithm, Callback, Evaluator
@@ -34,7 +34,7 @@ from llmfoundry.callbacks import (AsyncEval, CurriculumLearning, EvalGauntlet,
                                   FDiffMetrics, GlobalLRScaling,
                                   HuggingFaceCheckpointer, LayerFreezing,
                                   MonolithicCheckpointSaver,
-                                  ScheduledGarbageCollector)
+                                  ScheduledGarbageCollector, GenerateVLM)
 from llmfoundry.data.dataloader import build_dataloader
 from llmfoundry.optim import (DecoupledAdaLRLion, DecoupledClipLion,
                               DecoupledLionW, DecoupledLionW_8bit)
