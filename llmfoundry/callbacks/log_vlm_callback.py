@@ -66,13 +66,6 @@ class GenerateVLM(Callback):
             diff = time.time() - start
             log.info(f'Generate callback ran in {diff} seconds for {len(self.prompts)} prompts')
 
-    def convert_chat_dict(self, prompt, tokenizer)
-        ''' Convert a single sample into a chat formatted prompt. '''
-        messages = []
-        prompt = tokenizer.apply_chat_template(messages[:-1],
-                                           tokenize=False,
-                                           add_generation_prompt=True)
-
     def generate(self, state: State, logger: Logger):
         self.last_generate_batch = state.timestamp.batch
 
