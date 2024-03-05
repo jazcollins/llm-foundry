@@ -90,11 +90,11 @@ class GenerateVLM(Callback):
         images = []
         orig_images = []
         for prompt, url in zip(self.prompts, self.image_urls):
-            if tokenizer.chat_template:
+            if tokenizer.chat_template is not None:
                 formatted_convo = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': '<image>\n'+prompt}]
                 aug_prompt = tokenizer.apply_chat_template(formatted_convo,
-                                                            tokenize=False,
-                                                            add_generation_prompt=True)
+                                                           tokenize=False,
+                                                           add_generation_prompt=True)
             else:
                 aug_prompt = '<image>\n'+prompt
             aug_prompts.append(aug_prompt)
@@ -130,7 +130,7 @@ class GenerateVLM(Callback):
             # Move batch to device.
             input_ids = device.tensor_to_device(input_ids)
             attn_mask = device.tensor_to_device(attn_mask)
-            img = device.tensor_to_device(img).to(torch.float32)
+            img = device.tensor_to_device(img)
             
             with get_precision_context(state.precision):
                 output_token_ids.extend(
@@ -151,9 +151,13 @@ class GenerateVLM(Callback):
                 aug_prompt = aug_prompts[i]
                 output_tokens = output_token_ids[i][input_tokens_len:]
                 output_text = tokenizer.decode(output_tokens, skip_special_tokens=True)
+
                 rows.append([wandb.Image(image), prompt, aug_prompt, output_text])
 
-            logger.log_table(columns=['img', 'prompt', 'chat prompt', 'generation'], rows=rows, name='generations')
+            # There are problems with using the MosaicMLLogger and/or console_logger --> the images can't get decoded correctly 
+            # Hacky but just log to the WandB logger
+            table = wandb.Table(columns=['img', 'prompt', 'aug_prompt', 'generation'], rows=rows)
+            wandb.log({'generations': table}, state.timestamp.batch.value)
 
         tokenizer.padding_side = original_padding_side
         model.train(mode=original_mode)

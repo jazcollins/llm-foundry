@@ -39,7 +39,6 @@ class ComposerHFLLaVa(HuggingFaceModel):
         # Set up flash attention
         use_flash_attention_2 = om_model_config.get('use_flash_attention_2', False)
         requested_attention_implementation = 'flash_attention_2' if use_flash_attention_2 else 'eager'
-        load_in_8bit = om_model_config.get('load_in_8bit', False)
         if use_flash_attention_2 and not is_flash_v2_installed():
             raise ValueError(
                 'use_flash_attention_2 is set to True, but flash-attention 2 is not installed. '
@@ -300,6 +299,7 @@ class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
                 f" the number of image given to the model is {num_images}. This prevents correct indexing and breaks batch generation."
             )
 
+        final_embedding = final_embedding.to(image_features.dtype)
         final_embedding[image_to_overwrite] = image_features.contiguous().reshape(-1, embed_dim).to(target_device)
         final_attention_mask |= image_to_overwrite
         position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_((final_attention_mask == 0), 1)
