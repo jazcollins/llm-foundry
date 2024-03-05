@@ -297,6 +297,7 @@ class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
             raise ValueError(
                 f"The input provided to the model are wrong. The number of image tokens is {torch.sum(special_image_token_mask)} while"
                 f" the number of image given to the model is {num_images}. This prevents correct indexing and breaks batch generation."
+                f"image_to_overwrite.sum() is {image_to_overwrite.sum()} and image_features.shape[:-1].numel() is {image_features.shape[:-1].numel()}"
             )
 
         final_embedding = final_embedding.to(image_features.dtype)
