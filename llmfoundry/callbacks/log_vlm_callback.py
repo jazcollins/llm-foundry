@@ -130,7 +130,7 @@ class GenerateVLM(Callback):
             # Move batch to device.
             input_ids = device.tensor_to_device(input_ids)
             attn_mask = device.tensor_to_device(attn_mask)
-            img = device.tensor_to_device(img).to(attn_mask.dtype)
+            img = device.tensor_to_device(img).to(torch.bfloat16)
             
             with get_precision_context(state.precision):
                 output_token_ids.extend(
