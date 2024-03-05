@@ -86,18 +86,18 @@ class GenerateVLM(Callback):
         model.eval()
         device = state.device
 
-        chat_prompts = []
+        aug_prompts = []
         images = []
         orig_images = []
         for prompt, url in zip(self.prompts, self.image_urls):
             if tokenizer.chat_template:
                 formatted_convo = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': '<image>\n'+prompt}]
-                chat_prompt = tokenizer.apply_chat_template(formatted_convo,
+                aug_prompt = tokenizer.apply_chat_template(formatted_convo,
                                                             tokenize=False,
                                                             add_generation_prompt=True)
             else:
-                chat_prompt = prompt
-            chat_prompts.append(chat_prompt)
+                aug_prompt = '<image>\n'+prompt
+            aug_prompts.append(aug_prompt)
 
             image = Image.open(requests.get(url, stream=True).raw)
             image = image.convert("RGBA")
@@ -110,7 +110,7 @@ class GenerateVLM(Callback):
         tokenizer.padding_side = 'left'
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        tokenized_input = tokenizer(chat_prompts, return_tensors='pt', padding=True)
+        tokenized_input = tokenizer(aug_prompts, return_tensors='pt', padding=True)
 
         all_input_ids = tokenized_input['input_ids']
         all_attn_masks = tokenized_input['attention_mask']
@@ -148,10 +148,10 @@ class GenerateVLM(Callback):
             input_tokens_len = all_input_ids.shape[1]  # pyright: ignore[reportGeneralTypeIssues]
             for i, prompt in enumerate(self.prompts):
                 image = orig_images[i]
-                chat_prompt = chat_prompts[i]
+                aug_prompt = aug_prompts[i]
                 output_tokens = output_token_ids[i][input_tokens_len:]
                 output_text = tokenizer.decode(output_tokens, skip_special_tokens=True)
-                rows.append([wandb.Image(image), prompt, chat_prompt, output_text])
+                rows.append([wandb.Image(image), prompt, aug_prompt, output_text])
 
             logger.log_table(columns=['img', 'prompt', 'chat prompt', 'generation'], rows=rows, name='generations')
 
