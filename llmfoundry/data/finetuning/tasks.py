@@ -40,6 +40,7 @@ from functools import partial
 from pathlib import Path
 from typing import (Any, Callable, Dict, List, Literal, Optional, Sequence, Set,
                     Tuple, Union, cast)
+import torch
 
 import datasets as hf_datasets
 import huggingface_hub as hf_hub
@@ -76,8 +77,9 @@ ExampleType = Literal['prompt_response', 'chat', 'multimodal']
 TokenizedExample = Dict[str, List[Union[int, Image.Image]]]
 
 # TODO ultimately want to get this pretrained path from elsewhere
+# can get from vision_tower if we have access to model?
 img_processor = CLIPImageProcessor.from_pretrained('openai/clip-vit-large-patch14-336')
-
+_HF_IGNORE_INDEX = -100
 
 def _get_example_type(example: Example) -> ExampleType:
     """Determines the type of the input example.
@@ -343,6 +345,61 @@ def _tokenize_multimodal_chat_formatted_example(
     batch['images'] = image
     return batch
 
+def _tokenize_multimodal_chat_formatted_example_mask(
+        example: MultimodalPromptResponseDict,
+        tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
+    ''' Mask labels to train w multi-turn sample in one example '''
+    
+    image = _process_image(example['image'])
+
+    _validate_chat_formatted_example(example)
+    messages = example[_get_key(example, _ALLOWED_MESSAGES_KEYS)]
+
+    last_message = messages[-1]
+    if last_message['role'] != 'assistant':
+        raise ValueError(
+            f'last message must be from assistant. {last_message=}')
+
+    # Chat format and tokenize messages
+    chat_convo = tokenizer.apply_chat_template(messages, tokenize=False)
+    tokenized_chat_convo = tokenizer(chat_convo) # Dict of tokenized data
+
+    # Mask out tokens any tokens not corresponding to assistant response
+    # NOTE this is very brittle - will not work if we switch tokenizers
+    # Works with 'mistralai/Mistral-7B-v0.1' and chat template    
+    sep_token = tokenizer.convert_tokens_to_ids('<|im_end|>')
+    sep_n_tokens = 3 # '<|im_end|>\n' is three tokens
+
+    cur_idx = 1 # Can skip the <s>
+    input_id = torch.tensor(tokenized_chat_convo['input_ids'])
+    label = input_id.clone()
+    label[:cur_idx] = _HF_IGNORE_INDEX
+
+    sep_token_idxes = (input_id == sep_token).nonzero().squeeze().tolist()
+    for sep_token_idx in sep_token_idxes:
+        # first token will be '<|im_start|>', second token will tell us the role
+        turn = input_id[cur_idx:sep_token_idx+sep_n_tokens]
+
+        role = tokenizer.decode(turn[1])
+        if role == 'system' or role == 'user':
+            # Mask out labels
+            label[cur_idx:sep_token_idx+sep_n_tokens] = _HF_IGNORE_INDEX
+        else: # Role is 'assistant'
+            # Just remove "<|im_start|>assistant\n" part which also happens to be 3 tokens
+            # Note this is v v hacky
+            label[cur_idx:cur_idx+sep_n_tokens] = _HF_IGNORE_INDEX
+            # Also dont want the newline at the end of the <|im_end|> (2 tokens bc '' also)
+            # but need to check in bounds for last assistant round (has no \n)
+            if sep_token_idx + sep_n_tokens - 2 < label.shape[0]:
+                label[sep_token_idx + sep_n_tokens - 2] = _HF_IGNORE_INDEX
+        cur_idx = sep_token_idx + sep_n_tokens
+
+    batch = {'input_ids': tokenized_chat_convo['input_ids'],
+             'labels': label.tolist(),
+             'attention_mask': tokenized_chat_convo['attention_mask'],
+             'images': image}
+    return batch
+
 def _tokenize_formatted_example(
         example: Example,
         tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
@@ -366,7 +423,7 @@ def _tokenize_formatted_example(
     elif example_format == 'multimodal_chat':
         multimodal_example: MultimodalPromptResponseDict = cast(
             MultimodalPromptResponseDict, example) # TODO chabge???
-        return _tokenize_multimodal_chat_formatted_example(
+        return _tokenize_multimodal_chat_formatted_example_mask(
             multimodal_example, tokenizer)
     elif example_format == 'multimodal':
         multimodal_example: MultimodalPromptResponseDict = cast(
