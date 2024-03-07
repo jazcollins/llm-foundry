@@ -141,6 +141,8 @@ class Seq2SeqFinetuningCollator:
             for example in examples:                
                 # Pad ourselves
                 labels = example['labels']
+                # Add stop token in case we truncated?
+                labels[-1] = self.tokenizer.eos_token_id
                 input_ids = example['input_ids']
                 attention_mask = example['attention_mask']
                 n_total = len(input_ids)
