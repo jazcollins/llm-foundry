@@ -352,7 +352,7 @@ def _tokenize_multimodal_chat_formatted_example_mask(
     
     image = _process_image(example['image'])
 
-    _validate_chat_formatted_example(example)
+    # _validate_chat_formatted_example(example)
     messages = example[_get_key(example, _ALLOWED_MESSAGES_KEYS)]
 
     last_message = messages[-1]
