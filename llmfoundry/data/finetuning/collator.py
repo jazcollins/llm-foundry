@@ -6,7 +6,7 @@ import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, BatchEncoding
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +128,47 @@ class Seq2SeqFinetuningCollator:
 
     def _process_and_batch_decoder_only(
             self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        
+        # Such a hack but quick fix for multimodal multi-turn masking
+        # If there's already _HF_IGNORE_INDEX in labels then don't do
+        # concatenation stuff
+        if _HF_IGNORE_INDEX in examples[0]['labels']:
+            
+            images_l = []
+            labels_l = []
+            input_ids_l = []
+            attention_masks_l = []
+            for example in examples:                
+                # Pad ourselves
+                labels = example['labels']
+                input_ids = example['input_ids']
+                attention_mask = example['attention_mask']
+                n_total = len(input_ids)
+               
+                a_pad = [0] * (self.max_seq_len - n_total)
+                i_pad = [self.tokenizer.pad_token_type_id] * (self.max_seq_len - n_total)
+                l_pad = [_HF_IGNORE_INDEX] * (self.max_seq_len - n_total)
+                if self.tokenizer.padding_side == 'left':
+                    labels = l_pad + labels
+                    input_ids = i_pad + input_ids
+                    attention_mask = a_pad + attention_mask
+                else:
+                    labels = labels + l_pad
+                    input_ids = input_ids + i_pad
+                    attention_mask = attention_mask + a_pad
+
+                labels_l.append(torch.tensor(labels))
+                input_ids_l.append(torch.tensor(input_ids))
+                attention_masks_l.append(torch.tensor(attention_mask))
+                images_l.append(example['images'])
+
+            # Collate and return batch
+            batch = {'pixel_values': torch.stack(images_l, 0),
+                     'input_ids': torch.stack(input_ids_l, 0),
+                     'attention_mask': torch.stack(attention_masks_l, 0),
+                     'labels': torch.stack(labels_l, 0)}
+            return batch
+
         # If multimodal batch, exclude images from this processing
         images = []
 

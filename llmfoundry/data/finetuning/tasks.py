@@ -362,7 +362,7 @@ def _tokenize_multimodal_chat_formatted_example_mask(
 
     # Chat format and tokenize messages
     chat_convo = tokenizer.apply_chat_template(messages, tokenize=False)
-    tokenized_chat_convo = tokenizer(chat_convo) # Dict of tokenized data
+    tokenized_chat_convo = tokenizer(chat_convo, truncation=True, max_length=tokenizer.model_max_length) # Dict of tokenized data
 
     # Mask out tokens any tokens not corresponding to assistant response
     # NOTE this is very brittle - will not work if we switch tokenizers
