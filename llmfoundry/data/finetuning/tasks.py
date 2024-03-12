@@ -81,7 +81,7 @@ TokenizedExample = Dict[str, List[Dict[str, List[int]]]]
 
 # TODO ultimately want to get this pretrained path from elsewhere
 img_processor = CLIPImageProcessor.from_pretrained('openai/clip-vit-large-patch14-336')
-
+DEFAULT_IMAGE_TOKEN = '<image>'
 
 def _get_example_type(example: Example) -> ExampleType:
     """Determines the type of the input example.
