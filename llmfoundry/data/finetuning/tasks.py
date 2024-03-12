@@ -431,10 +431,25 @@ def _tokenize_multimodal_prompt_response_formatted_example(
         'turns': [batch]
     }
 
+def _standardize_img_tag(example):
+    '''
+        Make sure <image> tag comes at beginning of first user sentence.
+        e.g.:
+        'What objects are in the kitchen that could be considered hazardous and require special attention to avoid accidents?\n<image>' -->
+        '<image>\nWhat objects are in the kitchen that could be considered hazardous and require special attention to avoid accidents?'
+    '''
+    for message in example['messages']:
+        content_key = _get_key(message, _ALLOWED_CONTENT_KEYS)
+        if DEFAULT_IMAGE_TOKEN in message[content_key]:
+            # Remove image token so we can control where it goes (always before sentence)
+            message[content_key] = message[content_key].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+            message[content_key] = DEFAULT_IMAGE_TOKEN + '\n' + message[content_key]
+            message[content_key] = message[content_key].strip()
+
 def _tokenize_multimodal_chat_formatted_example(
         example: MultimodalPromptResponseDict,
         tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
-
+    _standardize_img_tag(example)
     image = _process_image(example['image'])
 
     # Note: We do not add special tokens when tokenizing chat-formatted examples because
