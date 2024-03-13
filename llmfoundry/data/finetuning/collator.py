@@ -362,8 +362,8 @@ class Seq2SeqFinetuningCollator:
             }
 
             # exclude images if exist because cannot be passed to tokenizer (next step)
-            if 'images' in processed_example:
-                image = processed_example.pop('images')
+            if 'images' in example['turns'][0]:
+                image = example['turns'][0].pop('images')
                 images.append(image)
 
             processed_examples.append(processed_example)

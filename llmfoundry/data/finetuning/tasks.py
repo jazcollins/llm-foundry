@@ -465,7 +465,9 @@ def _tokenize_multimodal_chat_formatted_example(
                           add_special_tokens=False,
                           padding=False,
                           truncation=False)
-        batch['images'] = image # TODO not sure about this, only need for first user turn? - prob wanna look for image token. maybe
+        # Just include image to first turn since thats where we will look for it later
+        if len(batches) == 0:
+            batch['images'] = image
         batches.append(batch)
 
     return {
