@@ -371,6 +371,10 @@ class LlavaForConditionalGenerationForTraining(LlavaPreTrainedModel):
             else self.config.vision_feature_select_strategy
         )
 
+        # For now we only support forward pass where pixel_values is passed
+        if pixel_values is None:
+            assert False, 'pixel_values is None, must pass pixel_values for training!'
+
         if inputs_embeds is None:
             # 1. Extra the input embeddings
             inputs_embeds = self.get_input_embeddings()(input_ids)
