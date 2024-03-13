@@ -21,9 +21,6 @@ import torch
 
 log = logging.getLogger(__name__)
 
-# TODO should grab this from elsewhere in case we want to change it?
-SYSTEM = 'You are a helpful, respectful and honest assistant. Always answer as helpfully as possible.'
-
 class GenerateVLM(Callback):
     """Periodically log generations from a set of prompts and images for a VLM.
 
@@ -91,7 +88,7 @@ class GenerateVLM(Callback):
         orig_images = []
         for prompt, url in zip(self.prompts, self.image_urls):
             if tokenizer.chat_template is not None:
-                formatted_convo = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': '<image>\n'+prompt}]
+                formatted_convo = [{'role': 'user', 'content': '<image>\n'+prompt}]
                 aug_prompt = tokenizer.apply_chat_template(formatted_convo,
                                                            tokenize=False,
                                                            add_generation_prompt=True)
