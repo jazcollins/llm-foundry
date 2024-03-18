@@ -35,7 +35,7 @@ from llmfoundry.callbacks import (AsyncEval, CurriculumLearning, EvalGauntlet,
                                   FDiffMetrics, GlobalLRScaling,
                                   HuggingFaceCheckpointer, LayerFreezing,
                                   MonolithicCheckpointSaver,
-                                  ScheduledGarbageCollector)
+                                  ScheduledGarbageCollector, GenerateVLM)
 from llmfoundry.data.dataloader import build_dataloader
 from llmfoundry.optim import (DecoupledAdaLRLion, DecoupledClipLion,
                               DecoupledLionW)
@@ -198,6 +198,24 @@ def build_callback(
                 raise KeyError(
                     '"interval" must be specified with generate callback')
         return Generate(prompts=list(prompts), interval=interval, **kwargs)
+    elif name == 'generate_vlm_callback':
+        prompts = kwargs.pop('prompts')
+        urls = kwargs.pop('image_urls')
+        interval = kwargs.pop('interval', None)
+        # Generate callback used to be batch_log_interval, so this is for backwards compatibility
+        if interval is None:
+            batch_log_interval: str = kwargs.pop('batch_log_interval', '')
+            if batch_log_interval:
+                interval = f'{batch_log_interval}ba'
+                warnings.warn(
+                    ('generate_callback.batch_log_interval is deprecated and will be removed in a future release.'
+                     f'Please use interval: {interval}'),
+                    DeprecationWarning,
+                )
+            else:
+                raise KeyError(
+                    '"interval" must be specified with generate callback')
+        return GenerateVLM(prompts=list(prompts), image_urls=list(urls), interval=interval, **kwargs)
     elif name == 'global_lr_scaling':
         return GlobalLRScaling(**kwargs)
     elif name == 'layer_freezing':

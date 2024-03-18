@@ -5,6 +5,7 @@ my-copy-arxiv*/
 
 # WandB
 wandb/
+local/
 
 # Makefile envs
 env*/

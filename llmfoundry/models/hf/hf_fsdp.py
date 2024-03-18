@@ -96,6 +96,7 @@ def hf_get_hidden_layers(model: PreTrainedModel) -> Any:
         'layers',  # GPTNeoX, Llama, ProphetNet, Marian (from encoder)
         'block',  # T5, BART, Pegasus (from encoder)
         'blocks',  # MPT
+        'language_model.model.layers', # LLaVA (LLaMa and Mistral)
     )
     layers = findattr(model, hidden_layers_attrs)
     if layers is None:

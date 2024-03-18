@@ -510,6 +510,8 @@ def main(cfg: DictConfig) -> Trainer:
 
     # Dataloaders
     log.info('Building train loader...')
+    import streaming
+    streaming.base.util.clean_stale_shared_memory()
     train_loader = build_dataloader(
         train_loader_config,
         tokenizer,
@@ -530,6 +532,7 @@ def main(cfg: DictConfig) -> Trainer:
 
     else:
         log.info('Building eval loader...')
+        streaming.base.util.clean_stale_shared_memory()
         eval_icl_seq_len: int = icl_seq_len if icl_seq_len else max_seq_len
         evaluators, _, eval_gauntlet_callback = build_evaluators(
             eval_loader_config,

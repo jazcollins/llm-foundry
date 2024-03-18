@@ -46,12 +46,14 @@ import huggingface_hub as hf_hub
 import numpy as np
 from composer.utils import dist
 from streaming import Stream, StreamingDataset
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, CLIPImageProcessor
 
 from llmfoundry.data.finetuning.collator import (_HF_IGNORE_INDEX,
                                                  stitch_turns_decoder_only,
                                                  stitch_turns_encoder_decoder)
 from llmfoundry.utils.logging_utils import SpecificWarningFilter
+from PIL import Image
+import torchvision.transforms as transforms
 
 log = logging.getLogger(__name__)
 
@@ -71,10 +73,15 @@ SUPPORTED_EXTENSIONS = ['.csv', '.jsonl', '.parquet']
 
 PromptResponseDict = Mapping[str, str]
 ChatFormattedDict = Mapping[str, List[Dict[str, str]]]
+MultimodalPromptResponseDict = Dict[str, Union[str, Image.Image]]
 Example = Union[PromptResponseDict, ChatFormattedDict]
-ExampleType = Literal['prompt_response', 'chat']
+ExampleType = Literal['prompt_response', 'chat', 'multimodal']
 TokenizedExample = Dict[str, List[Dict[str, List[int]]]]
+# TokenizedExample = Dict[str, List[Union[int, Image.Image]]]
 
+# TODO ultimately want to get this pretrained path from elsewhere
+img_processor = CLIPImageProcessor.from_pretrained('openai/clip-vit-large-patch14-336')
+DEFAULT_IMAGE_TOKEN = '<image>'
 
 def _get_example_type(example: Example) -> ExampleType:
     """Determines the type of the input example.
@@ -91,7 +98,18 @@ def _get_example_type(example: Example) -> ExampleType:
     if not isinstance(example, Mapping):
         raise TypeError(
             f'Expected example to be a Mapping, but found {type(example)}')
-    if any(allowed_message_key in example
+    if 'image' in example:
+        if any(allowed_message_key in example
+           for allowed_message_key in _ALLOWED_MESSAGES_KEYS):
+            return 'multimodal_chat'
+        elif any([
+            pr in example
+            for pr in _ALLOWED_PROMPT_KEYS.union(_ALLOWED_RESPONSE_KEYS)
+        ]):
+            return 'multimodal'
+        else:
+            raise KeyError(f'Unknown conversation type {example=}')
+    elif any(allowed_message_key in example
            for allowed_message_key in _ALLOWED_MESSAGES_KEYS):
         return 'chat'
     elif any([
@@ -334,7 +352,129 @@ def _tokenize_prompt_response_formatted_example(
     }
 
 
-def tokenize_formatted_example(
+def _square_pad_img(img, bg_color=(255, 255, 255)):
+    '''
+        img: PIL Image
+    '''
+    width, height = img.size
+    if width == height:
+        return img
+    elif width > height:
+        result = Image.new(img.mode, (width, width), bg_color)
+        result.paste(img, (0, (width - height) // 2))
+    else:
+        result = Image.new(img.mode, (height, height), bg_color)
+        result.paste(img, ((height - width) // 2, 0))
+    return result
+
+
+def _process_image(image):
+    '''
+        Preprocess images according to 
+        https://github.com/haotian-liu/LLaVA/blob/5d8f1760c08b7dfba3ae97b71cbd4c6f17d12dbd/llava/mm_utils.py#L169
+    '''
+    image = _square_pad_img(image)
+    image = img_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    return image
+
+
+def _tokenize_multimodal_prompt_response_formatted_example(
+        example: MultimodalPromptResponseDict,
+        tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
+    """Tokenize a formatted example and validate expected keys."""
+    example_keys = set(example.keys())
+    prompt_keys = example_keys.intersection(_ALLOWED_PROMPT_KEYS)
+    response_keys = example_keys.intersection(_ALLOWED_RESPONSE_KEYS)
+
+    if len(prompt_keys) != 1:
+        raise KeyError(
+            f'Unable to tokenize example because {len(prompt_keys)} of the allowed prompt keys ' +\
+            f'were present in {example_keys=}. Please specify exactly one. {_ALLOWED_PROMPT_KEYS=}'
+        )
+
+    if len(response_keys) != 1:
+        raise KeyError(
+            f'Unable to tokenize example because {len(response_keys)} of the allowed response keys ' +\
+            f'were present in {example_keys=}. Please specify exactly one. {_ALLOWED_RESPONSE_KEYS=}'
+        )
+
+    prompt_key = prompt_keys.pop()
+    response_key = response_keys.pop()
+    prompt = example[prompt_key]
+    response = example[response_key]
+    image = _process_image(example['image'])
+
+    if not isinstance(prompt, str):
+        raise TypeError(
+            f'Unable to tokenize example because {prompt_key} was not a string. {example=}'
+        )
+
+    if not isinstance(response, str):
+        raise TypeError(
+            f'Unable to tokenize example because {response_key} was not a string. {example=}'
+        )
+
+    # Note: We default to the tokenizer's add_bos_token and add_eos_token behavior here
+    # (which we do not do for chat-formatted examples). This is because chat examples specifically
+    # go through the tokenizer's `apply_chat_template` method, which handles special tokens,
+    # and these prompt-response-formatted examples do not.
+    # We disable padding and truncation because those are handled in the collator, which needs to
+    # be able to assume that none of the tokens are pad tokens.
+    batch = _tokenize_with_bos_removal(
+        tokenizer=tokenizer,
+        text=prompt,
+        text_target=response,
+    )
+    batch['images'] = image
+
+    return {
+        'turns': [batch]
+    }
+
+def _standardize_img_tag(example):
+    '''
+        Make sure <image> tag comes at beginning of first user sentence.
+        e.g.:
+        'What objects are in the kitchen that could be considered hazardous and require special attention to avoid accidents?\n<image>' -->
+        '<image>\nWhat objects are in the kitchen that could be considered hazardous and require special attention to avoid accidents?'
+    '''
+    for message in example['messages']:
+        content_key = _get_key(message, _ALLOWED_CONTENT_KEYS)
+        if DEFAULT_IMAGE_TOKEN in message[content_key]:
+            # Remove image token so we can control where it goes (always before sentence)
+            message[content_key] = message[content_key].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+            message[content_key] = DEFAULT_IMAGE_TOKEN + '\n' + message[content_key]
+            message[content_key] = message[content_key].strip()
+
+def _tokenize_multimodal_chat_formatted_example(
+        example: MultimodalPromptResponseDict,
+        tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
+    _standardize_img_tag(example)
+    image = _process_image(example['image'])
+
+    # Note: We do not add special tokens when tokenizing chat-formatted examples because
+    # special tokens are expected to be added via the tokenizer's chat template. So,
+    # we instead expect the prompt/response outputs of `_slice_chat_formatted_example`
+    # (which calls `apply_chat_template`) to have the correct special tokens already.
+    # We disable padding and truncation because those are handled in the collator, which needs to
+    # be able to assume that none of the tokens are pad tokens.
+    batches = []
+    for prompt, response in _slice_chat_formatted_example(example, tokenizer):
+        batch = tokenizer(text=prompt,
+                          text_target=response,
+                          add_special_tokens=False,
+                          padding=False,
+                          truncation=False)
+        # Just include image to first turn since thats where we will look for it later
+        if len(batches) == 0:
+            batch['images'] = image
+        batches.append(batch)
+
+    return {
+        'turns': batches
+    }
+
+def _tokenize_formatted_example(
         example: Example,
         tokenizer: PreTrainedTokenizerBase) -> TokenizedExample:
     """Tokenizes a formatted example using the provided tokenizer.
@@ -354,6 +494,16 @@ def tokenize_formatted_example(
     if example_format == 'chat':
         chat_example = cast(ChatFormattedDict, example)
         return _tokenize_chat_formatted_example(chat_example, tokenizer)
+    elif example_format == 'multimodal_chat':
+        multimodal_example: MultimodalPromptResponseDict = cast(
+            MultimodalPromptResponseDict, example) # TODO chabge???
+        return _tokenize_multimodal_chat_formatted_example(
+            multimodal_example, tokenizer)
+    elif example_format == 'multimodal':
+        multimodal_example: MultimodalPromptResponseDict = cast(
+            MultimodalPromptResponseDict, example)
+        return _tokenize_multimodal_prompt_response_formatted_example(
+            multimodal_example, tokenizer)
     elif example_format == 'prompt_response':
         prompt_response_example: PromptResponseDict = cast(
             PromptResponseDict, example)
@@ -579,7 +729,7 @@ class StreamingFinetuningDataset(StreamingDataset):
                 )
             # Convert to latest format by wrapping sample as a "turn"
             return {'turns': [sample]}
-        return tokenize_formatted_example(sample, tokenizer=self.tokenizer)
+        return _tokenize_formatted_example(sample, tokenizer=self.tokenizer)
 
 
 class DatasetConstructor:
@@ -784,7 +934,7 @@ class DatasetConstructor:
             def dataset_mapper(example: Dict):
                 if preprocessing_fn is not None:
                     example = preprocessing_fn(example)
-                return tokenize_formatted_example(example, tokenizer)
+                return _tokenize_formatted_example(example, tokenizer)
 
             detected_cpu_count = os.cpu_count() or 1
             detected_cpus_with_margin = detected_cpu_count - 8

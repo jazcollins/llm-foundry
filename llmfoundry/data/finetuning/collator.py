@@ -295,6 +295,9 @@ class Seq2SeqFinetuningCollator:
 
     def _process_and_batch_decoder_only(
             self, examples: List[TokenizedExample]) -> Dict[str, torch.Tensor]:
+        # If multimodal batch, exclude images from this processing
+        images = []
+
         # Steps explained in comments
         processed_examples = []
         for example in examples:
@@ -358,6 +361,11 @@ class Seq2SeqFinetuningCollator:
                 'bidirectional_mask': bidirectional_mask,
             }
 
+            # exclude images if exist because cannot be passed to tokenizer (next step)
+            if 'images' in example['turns'][0]:
+                image = example['turns'][0].pop('images')
+                images.append(image)
+
             processed_examples.append(processed_example)
 
         batch = self.tokenizer.pad(
@@ -366,8 +374,11 @@ class Seq2SeqFinetuningCollator:
             max_length=self.max_seq_len,
             return_tensors='pt',
         )
-
         batch['sequence_id'] = batch['attention_mask'] - 1
+
+        # Add images back in if we have them
+        if len(images) > 0:
+            batch['pixel_values'] = torch.stack(images, 0)
 
         # This logic prevents trimming on at least the first batch
         if not (self._allow_pad_trimming and self._seen_first_batch):
@@ -381,6 +392,8 @@ class Seq2SeqFinetuningCollator:
         n_non_padding = batch['attention_mask'].sum(dim=1).max()
         keep_tokens = int(multiple_of * torch.ceil(n_non_padding / multiple_of))
         for k, v in batch.items():
+            if k == 'pixel_values':
+                continue
             if len(v.shape) < 2:
                 continue
             if self.tokenizer.padding_side == 'left':

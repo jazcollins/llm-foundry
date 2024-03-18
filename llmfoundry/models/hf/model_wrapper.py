@@ -67,6 +67,7 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
 
         # Note: We need to add the FSDP related attributes to the model AFTER the super init,
         # so that the (possible) embedding resizing doesn't destroy them
+
         prepare_hf_model_for_fsdp(self.model, init_device)
 
         # This provides support for meta initialization when using FSDP
@@ -80,6 +81,7 @@ class HuggingFaceModelWithZLoss(HuggingFaceModel):
                 k: v for k, v in batch.items() if k in self.model_forward_args
             }
             output = self.model(**batch)  # type: ignore (thirdparty)
+  
         else:
             raise ValueError(
                 'Unexpected batch type. Expected a dictionary with keys corresponding to the inputs to the forward function of the Huggingface model'
